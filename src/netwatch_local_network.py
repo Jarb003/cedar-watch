@@ -27,6 +27,8 @@ import re
 import socket
 import platform
 import subprocess
+import ipaddress
+from concurrent.futures import ThreadPoolExecutor
 
 try:
     import requests
@@ -48,6 +50,40 @@ def get_own_ip():
             return None
     finally:
         s.close()
+
+
+def _quick_ping(ip, timeout_ms=300):
+    """Fires a single fast, low-timeout ping — used only to populate the ARP cache during a sweep."""
+    system = platform.system()
+    if system == "Windows":
+        cmd = ["ping", "-n", "1", "-w", str(timeout_ms), str(ip)]
+    else:
+        cmd = ["ping", "-c", "1", "-W", "1", str(ip)]
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=2)
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+
+def sweep_subnet(own_ip, max_workers=40):
+    """
+    Pings every address in the /24 subnet your machine is on. Most devices
+    won't reply (firewalls block ICMP by default on many laptops/phones),
+    but the ping still forces your OS to ARP-resolve the address, which
+    populates the ARP table even for devices that ignore the ping itself.
+    This is why we sweep BEFORE reading arp -a, rather than relying on
+    whatever was already cached.
+    """
+    if not own_ip:
+        return
+    try:
+        network = ipaddress.ip_network(f"{own_ip}/24", strict=False)
+    except ValueError:
+        return
+
+    targets = [str(ip) for ip in network.hosts()]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        executor.map(_quick_ping, targets)
 
 
 def get_arp_table():
@@ -135,16 +171,25 @@ def get_mac_vendor(mac):
 
 
 def enrich_devices(devices, own_ip, check_active=True, lookup_vendor=True):
-    """Adds is_self, active, os_guess, and vendor fields to each device dict."""
+    """
+    Adds is_self, active, os_guess, and vendor fields to each device dict.
+
+    Note on "active": if a device appears in the ARP table at all, it has
+    communicated on the network recently (that's how ARP works), so we treat
+    ARP presence as the primary "active" signal. A direct ping reply, when we
+    get one, additionally gives us a TTL to guess the OS — but a failed ping
+    does NOT mean the device is offline, since many devices (especially
+    Windows laptops and phones) block ICMP by default while still being
+    fully connected.
+    """
     for d in devices:
         d["is_self"] = (d["ip"] == own_ip)
+        d["active"] = True  # presence in the freshly-swept ARP table is the real signal
 
         if check_active:
-            active, ttl = ping_device(d["ip"])
-            d["active"] = active
-            d["os_guess"] = guess_os_from_ttl(ttl) if active else "Unknown (offline)"
+            replied, ttl = ping_device(d["ip"])
+            d["os_guess"] = guess_os_from_ttl(ttl) if replied else "Unknown (device doesn't reply to ping)"
         else:
-            d["active"] = None
             d["os_guess"] = "Not checked"
 
         d["vendor"] = get_mac_vendor(d["mac"]) if lookup_vendor else None
@@ -156,10 +201,12 @@ def print_report():
     print("=" * 80)
     print("  DEVICES ON YOUR LOCAL NETWORK")
     print("=" * 80)
-    print("(from your machine's ARP table, enriched with live ping + vendor lookup)\n")
 
     own_ip = get_own_ip()
     print(f"Your machine's IP: {own_ip or 'could not determine'}\n")
+
+    print("Scanning your subnet to find all connected devices — this takes ~5-10 seconds...")
+    sweep_subnet(own_ip)
 
     raw = get_arp_table()
     devices = parse_arp_table(raw)
@@ -168,25 +215,10 @@ def print_report():
         print("No devices found, or arp command unavailable on this system.")
         return
 
-    print("Pinging devices to check who's active — this may take a few seconds...\n")
+    print("Checking device details (OS guess + manufacturer)...\n")
     devices = enrich_devices(devices, own_ip)
 
     print(f"Found {len(devices)} device(s):\n")
     for d in devices:
         self_tag = "  <- THIS IS YOU" if d["is_self"] else ""
-        status = "ACTIVE" if d["active"] else ("OFFLINE" if d["active"] is False else "?")
-        vendor = d["vendor"] or "unknown vendor"
-
-        print(f"  {d['ip']:<16} {d['mac']:<18} [{status:<7}] {d['os_guess']:<32} {vendor}{self_tag}")
-
-    print("\n" + "=" * 80)
-    print("Notes:")
-    print("  - OS guess is a heuristic (based on ping TTL), not a certainty.")
-    print("  - Vendor identifies the network chip maker, not necessarily the OS")
-    print("    (e.g. a MacBook and an iPhone both show as 'Apple, Inc.').")
-    print("  - Your router's IP (often 192.168.1.1 or 192.168.0.1) is your gateway.")
-    print("  - Any device here you don't recognize is worth investigating.")
-
-
-if __name__ == "__main__":
-    print_report()
+        vendor = d["vendor"] or "unknown
