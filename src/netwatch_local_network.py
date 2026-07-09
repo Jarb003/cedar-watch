@@ -221,4 +221,21 @@ def print_report():
     print(f"Found {len(devices)} device(s):\n")
     for d in devices:
         self_tag = "  <- THIS IS YOU" if d["is_self"] else ""
-        vendor = d["vendor"] or "unknown
+        vendor = d["vendor"] or "unknown vendor"
+
+        print(f"  {d['ip']:<16} {d['mac']:<18} {d['os_guess']:<38} {vendor}{self_tag}")
+
+    print("\n" + "=" * 80)
+    print("Notes:")
+    print("  - All devices listed showed up in your ARP table after an active")
+    print("    subnet scan, meaning they're currently on your network.")
+    print("  - OS guess is a heuristic (based on ping TTL) and only works for")
+    print("    devices that reply to ping — many laptops/phones block it by")
+    print("    default, which is normal and not a sign of anything wrong.")
+    print("  - Vendor identifies the network chip maker, not necessarily the OS")
+    print("    (e.g. a MacBook and an iPhone both show as 'Apple, Inc.').")
+    print("  - Your router's IP (often 192.168.1.1 or 192.168.0.1) is your gateway.")
+
+
+if __name__ == "__main__":
+    print_report()
