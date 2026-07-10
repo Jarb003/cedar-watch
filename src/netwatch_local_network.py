@@ -24,6 +24,7 @@ Usage:
 """
 
 import re
+import time
 import socket
 import platform
 import subprocess
@@ -193,6 +194,8 @@ def enrich_devices(devices, own_ip, check_active=True, lookup_vendor=True):
             d["os_guess"] = "Not checked"
 
         d["vendor"] = get_mac_vendor(d["mac"]) if lookup_vendor else None
+        if lookup_vendor:
+            time.sleep(1.2)  # stay under api.macvendors.com's free-tier rate limit
 
     return devices
 
