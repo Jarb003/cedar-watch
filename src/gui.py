@@ -5,6 +5,7 @@ Simple desktop UI for Cedar Watch. Tabs for:
   - Connections (who your laptop is talking to)
   - Browser History (recent sites visited)
   - Local Network (devices on your WiFi/LAN)
+  - Port Scan (blue-team check for risky open ports on your LAN)
 
 Uses only the Python standard library for the UI itself (tkinter).
 
@@ -14,12 +15,14 @@ Usage:
 
 import io
 import contextlib
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext
 
 import netwatch_connections
 import netwatch_browser_history
 import netwatch_local_network
+import netwatch_portscan
 from parser import parse_log_file
 from detectors import run_all_detectors
 import main as log_main
@@ -41,11 +44,13 @@ class CedarWatchApp:
         self.conn_tab = self._build_connections_tab(notebook)
         self.history_tab = self._build_history_tab(notebook)
         self.network_tab = self._build_network_tab(notebook)
+        self.portscan_tab = self._build_portscan_tab(notebook)
 
         notebook.add(self.log_tab, text="Log Analyzer")
         notebook.add(self.conn_tab, text="Connections")
         notebook.add(self.history_tab, text="Browser History")
         notebook.add(self.network_tab, text="Local Network")
+        notebook.add(self.portscan_tab, text="Port Scan")
 
     def _setup_style(self):
         style = ttk.Style()
@@ -68,15 +73,33 @@ class CedarWatchApp:
         return box
 
     def _run_captured(self, box, func, *args, **kwargs):
-        """Runs a print()-based report function and pipes its output into a text box."""
+        """
+        Runs a print()-based report function on a background thread and pipes
+        its output into a text box once done. Scans like Connections or Local
+        Network can take a while (DNS lookups, pings, port checks) — running
+        them on the main thread would freeze the whole window ("Not
+        Responding") for the duration. Tkinter itself isn't thread-safe, so
+        the worker thread only computes text; the actual widget update is
+        scheduled back onto the main thread via root.after().
+        """
         box.delete("1.0", tk.END)
-        buffer = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(buffer):
-                func(*args, **kwargs)
-        except Exception as e:
-            buffer.write(f"\nError: {e}\n")
-        box.insert(tk.END, buffer.getvalue())
+        box.insert(tk.END, "Running...\n")
+
+        def worker():
+            buffer = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buffer):
+                    func(*args, **kwargs)
+            except Exception as e:
+                buffer.write(f"\nError: {e}\n")
+            output = buffer.getvalue()
+            self.root.after(0, lambda: self._show_output(box, output))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_output(self, box, text):
+        box.delete("1.0", tk.END)
+        box.insert(tk.END, text)
 
     # ---------- Log Analyzer tab ----------
     def _build_log_tab(self, notebook):
@@ -103,20 +126,26 @@ class CedarWatchApp:
     def _scan_log(self):
         path = self.log_path_var.get()
         self.log_output.delete("1.0", tk.END)
-        buffer = io.StringIO()
-        try:
-            events = parse_log_file(path)
-            if not events:
-                buffer.write("No parseable log events found. Check the file path/format.\n")
-            else:
-                alerts = run_all_detectors(events)
-                with contextlib.redirect_stdout(buffer):
-                    log_main.print_report(events, alerts)
-        except FileNotFoundError:
-            buffer.write(f"File not found: {path}\n")
-        except Exception as e:
-            buffer.write(f"Error: {e}\n")
-        self.log_output.insert(tk.END, buffer.getvalue())
+        self.log_output.insert(tk.END, "Running...\n")
+
+        def worker():
+            buffer = io.StringIO()
+            try:
+                events = parse_log_file(path)
+                if not events:
+                    buffer.write("No parseable log events found. Check the file path/format.\n")
+                else:
+                    alerts = run_all_detectors(events)
+                    with contextlib.redirect_stdout(buffer):
+                        log_main.print_report(events, alerts)
+            except FileNotFoundError:
+                buffer.write(f"File not found: {path}\n")
+            except Exception as e:
+                buffer.write(f"Error: {e}\n")
+            output = buffer.getvalue()
+            self.root.after(0, lambda: self._show_output(self.log_output, output))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ---------- Connections tab ----------
     def _build_connections_tab(self, notebook):
@@ -163,6 +192,26 @@ class CedarWatchApp:
 
     def _scan_network(self):
         self._run_captured(self.network_output, netwatch_local_network.print_report)
+
+    # ---------- Port Scan tab ----------
+    def _build_portscan_tab(self, notebook):
+        frame = ttk.Frame(notebook)
+        top = ttk.Frame(frame)
+        top.pack(fill="x", padx=10, pady=10)
+
+        ttk.Label(top, text="Target IP (blank = scan whole network):").pack(side="left", padx=(0, 6))
+        self.portscan_target_var = tk.StringVar(value="")
+        entry = ttk.Entry(top, textvariable=self.portscan_target_var, width=16)
+        entry.pack(side="left", padx=(0, 6))
+
+        ttk.Button(top, text="Scan Ports", command=self._scan_ports).pack(side="left")
+
+        self.portscan_output = self._make_output_box(frame)
+        return frame
+
+    def _scan_ports(self):
+        target = self.portscan_target_var.get().strip() or None
+        self._run_captured(self.portscan_output, netwatch_portscan.print_report, target)
 
 
 def main():

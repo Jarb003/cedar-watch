@@ -13,13 +13,25 @@ import psutil
 from datetime import datetime
 
 
-def resolve_hostname(ip, timeout=0.5):
-    """Best-effort reverse DNS lookup. Returns the IP itself if lookup fails."""
+_hostname_cache = {}
+
+
+def resolve_hostname(ip, timeout=0.3):
+    """
+    Best-effort reverse DNS lookup. Returns None if lookup fails.
+    Caches results per IP — on a busy machine the same remote IP (e.g. a DNS
+    server or CDN endpoint) can show up in dozens of connections at once, so
+    without caching we'd repeat the same slow lookup over and over.
+    """
+    if ip in _hostname_cache:
+        return _hostname_cache[ip]
     try:
         socket.setdefaulttimeout(timeout)
-        return socket.gethostbyaddr(ip)[0]
+        hostname = socket.gethostbyaddr(ip)[0]
     except (socket.herror, socket.gaierror, socket.timeout, OSError):
-        return None
+        hostname = None
+    _hostname_cache[ip] = hostname
+    return hostname
 
 
 def is_private_ip(ip):
