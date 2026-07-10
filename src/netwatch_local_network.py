@@ -5,7 +5,6 @@ machine's ARP table, then enriches each entry with:
   - whether it's YOUR machine
   - whether it's active right now (ping)
   - a best-effort OS guess (from ping TTL)
-  - the device manufacturer (from the MAC address vendor lookup)
 
 Notes on accuracy:
   - OS guess is a heuristic based on TTL, not a guarantee. Windows devices
@@ -13,29 +12,17 @@ Notes on accuracy:
     routers/network gear often ~255. This is the same trick tools like
     nmap use for a "quick guess" — it's right most of the time on a home
     network but not foolproof (VPNs, custom TTLs, etc. can throw it off).
-  - Vendor lookup identifies the manufacturer of the network chip (e.g.
-    "Apple, Inc." or "TP-Link"), which is a strong hint but not a direct
-    OS reading — a MacBook and an iPhone are both "Apple, Inc."
-  - Vendor lookup requires internet access (queries api.macvendors.com)
-    and is rate-limited on the free tier; failures fall back gracefully.
 
 Usage:
     python src/netwatch_local_network.py
 """
 
 import re
-import time
 import socket
 import platform
 import subprocess
 import ipaddress
 from concurrent.futures import ThreadPoolExecutor
-
-try:
-    import requests
-    HAS_REQUESTS = True
-except ImportError:
-    HAS_REQUESTS = False
 
 
 def get_own_ip():
@@ -151,29 +138,9 @@ def guess_os_from_ttl(ttl):
         return "Router / network device"
 
 
-_vendor_cache = {}
-
-
-def get_mac_vendor(mac):
-    """Best-effort lookup of the device manufacturer from its MAC address prefix."""
-    if not HAS_REQUESTS:
-        return None
-    if mac in _vendor_cache:
-        return _vendor_cache[mac]
-    try:
-        resp = requests.get(f"https://api.macvendors.com/{mac}", timeout=2)
-        if resp.status_code == 200:
-            vendor = resp.text.strip()
-            _vendor_cache[mac] = vendor
-            return vendor
-    except requests.RequestException:
-        pass
-    return None
-
-
-def enrich_devices(devices, own_ip, check_active=True, lookup_vendor=True):
+def enrich_devices(devices, own_ip, check_active=True):
     """
-    Adds is_self, active, os_guess, and vendor fields to each device dict.
+    Adds is_self, active, and os_guess fields to each device dict.
 
     Note on "active": if a device appears in the ARP table at all, it has
     communicated on the network recently (that's how ARP works), so we treat
@@ -192,10 +159,6 @@ def enrich_devices(devices, own_ip, check_active=True, lookup_vendor=True):
             d["os_guess"] = guess_os_from_ttl(ttl) if replied else "Unknown (device doesn't reply to ping)"
         else:
             d["os_guess"] = "Not checked"
-
-        d["vendor"] = get_mac_vendor(d["mac"]) if lookup_vendor else None
-        if lookup_vendor:
-            time.sleep(1.2)  # stay under api.macvendors.com's free-tier rate limit
 
     return devices
 
@@ -218,15 +181,13 @@ def print_report():
         print("No devices found, or arp command unavailable on this system.")
         return
 
-    print("Checking device details (OS guess + manufacturer)...\n")
+    print("Checking device details (OS guess)...\n")
     devices = enrich_devices(devices, own_ip)
 
     print(f"Found {len(devices)} device(s):\n")
     for d in devices:
         self_tag = "  <- THIS IS YOU" if d["is_self"] else ""
-        vendor = d["vendor"] or "unknown vendor"
-
-        print(f"  {d['ip']:<16} {d['mac']:<18} {d['os_guess']:<38} {vendor}{self_tag}")
+        print(f"  {d['ip']:<16} {d['mac']:<18} {d['os_guess']:<38}{self_tag}")
 
     print("\n" + "=" * 80)
     print("Notes:")
@@ -235,8 +196,6 @@ def print_report():
     print("  - OS guess is a heuristic (based on ping TTL) and only works for")
     print("    devices that reply to ping — many laptops/phones block it by")
     print("    default, which is normal and not a sign of anything wrong.")
-    print("  - Vendor identifies the network chip maker, not necessarily the OS")
-    print("    (e.g. a MacBook and an iPhone both show as 'Apple, Inc.').")
     print("  - Your router's IP (often 192.168.1.1 or 192.168.0.1) is your gateway.")
 
 
