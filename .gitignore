@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+cedar_watch.db
+dashboard_preview.png
+
+# Holds your AbuseIPDB API key — never commit this. config.example.py shows
+# the format for anyone else setting up the project.
+config.py

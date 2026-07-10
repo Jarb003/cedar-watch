@@ -12,6 +12,7 @@ from collections import Counter
 
 from parser import parse_log_file
 from detectors import run_all_detectors
+import threat_intel
 
 
 SEVERITY_COLOR = {
@@ -73,6 +74,13 @@ def main():
         sys.exit(0)
 
     alerts = run_all_detectors(events)
+
+    if threat_intel.is_configured():
+        print("Checking failed-login IPs against AbuseIPDB threat intel...")
+        alerts += threat_intel.generate_threat_intel_alerts(events)
+    else:
+        print("(No AbuseIPDB API key configured in config.py — skipping threat intel checks.)")
+
     print_report(events, alerts)
 
 

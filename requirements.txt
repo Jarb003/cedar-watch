@@ -1,3 +1,9 @@
 # Core log-analyzer functionality uses only the Python standard library.
 # netwatch.py (personal network activity monitor) requires:
 psutil>=5.9.0
+
+# Dashboard tab (charts embedded in the GUI) requires:
+matplotlib>=3.7.0
+
+# Threat Intel tab (AbuseIPDB lookups) requires:
+requests>=2.28.0
